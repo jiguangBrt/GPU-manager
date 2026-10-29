@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f5f7f4"><meta name="description" content="本机运行的服务器 GPU 监控与空闲资源观察工具">
+<title>GPU-manager · 算力一览</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%232f614b'/%3E%3Cpath d='M9 10h14v12H9zM13 6v4m6-4v4m-6 12v4m6-4v4M5 14h4m-4 5h4m14-5h4m-4 5h4' fill='none' stroke='%23fff' stroke-width='2'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/style.css"><script src="/static/app.js" defer></script>
+</head>
+<body>
+<aside class="sidebar">
+ <a class="brand" href="/" aria-label="GPU-manager 首页"><span class="brand-icon">▦</span><span>GPU-manager<small>让每一份算力，都看得见</small></span></a>
+ <div class="nav-label">工作空间</div>
+ <button class="nav-item active" id="overview-nav"><span class="nav-symbol">▦</span>算力概览<span class="nav-count" id="nav-count">8</span></button>
+ <div class="nav-label server-label">服务器<button class="icon-button" id="add-server-side" aria-label="添加服务器">＋</button></div>
+ <div id="server-list"></div>
+ <button class="add-server" id="add-server">＋ 添加服务器</button>
+ <div class="sidebar-bottom"><span class="local-dot"></span> 本机私有运行<small>127.0.0.1 · 只读监控</small><button class="quiet-link" id="settings-side">⚙ 监控设置</button></div>
+</aside>
+<main>
+ <header class="topbar"><span><span class="breadcrumb">工作空间</span><span class="slash">/</span>算力概览</span><span class="topbar-right"><span class="local-dot"></span> LOCAL WORKSPACE</span></header>
+ <div class="content">
+  <section class="heading"><div><div class="eyebrow">YOUR COMPUTE, AT A GLANCE</div><h1>算力一览<span class="heading-dot">.</span></h1><p>八张显卡的状态，一眼看清。</p></div><div class="heading-actions"><button class="button" id="settings-open"><span>☷</span> 监控设置</button><button class="button primary" id="refresh"><span id="refresh-icon">↻</span> 刷新状态</button></div></section>
+  <div id="notice" class="notice"><span class="notice-icon">i</span><div><strong>正在载入监控数据</strong><span>请稍候</span></div></div>
+  <section class="stats" aria-label="资源汇总" id="stats"></section>
+  <section class="resource-section">
+   <div class="section-heading"><div><h2>GPU 资源 <span id="gpu-count">—</span></h2><p id="server-meta">所有服务器</p></div><span class="update-time" id="updated">等待数据</span></div>
+   <div class="gpu-grid" id="gpu-grid" aria-live="polite"></div>
+   <div class="legend"><span>显存与 GPU 利用率为独立指标，请结合任务需求判断。</span><span class="legend-note">点击显卡查看进程与采样趋势 ↗</span></div>
+  </section>
+  <footer><span>GPU-manager <span class="footer-divider">/</span> 留一点余地，给下一个想法。</span><span id="poll-label">每 5 秒采样</span></footer>
+ </div>
+</main>
+<dialog id="settings-dialog" class="settings-dialog">
+ <div class="dialog-header"><div class="eyebrow">WORKSPACE SETTINGS</div><button class="close-button" data-close="settings-dialog" aria-label="关闭设置">×</button><h2>监控设置</h2><p>连接你的服务器，设置自动刷新间隔。</p></div>
+ <form id="settings-form">
+  <div class="dialog-body"><h3>自动采样</h3><div class="form-grid"><label>采样间隔 <span class="input-unit"><input id="interval" type="number" min="5" max="60" required><span>秒</span></span></label></div><p class="field-hint">直接展示每张卡的原始指标，不筛选、不自动判定可用。</p>
+  <div class="form-section-heading"><h3>服务器连接</h3><button type="button" class="quiet-link" id="new-server">＋ 添加</button></div><div id="server-edit-list"></div>
+  <div class="connection-help"><strong>沿用你已有的 SSH 配置</strong><p>填写 SSH 别名或 user@hostname。支持系统 SSH config、SSH Agent 和密钥；端口留空时沿用 SSH 配置。首次连接请先在本机终端登录一次，确认主机指纹。</p><p>当前支持免交互密钥登录。VPN / 跳板机按你原有方式连接，无需在服务器安装程序。</p></div>
+  <p id="settings-error" class="form-error" role="alert"></p></div>
+  <div class="dialog-footer"><button type="button" class="button" data-close="settings-dialog">取消</button><button class="button primary" id="save-settings" type="submit">保存并开始监控</button></div>
+ </form>
+</dialog>
+<dialog id="detail-dialog" class="detail-dialog"><div id="detail-content"></div></dialog>
+<div id="toast" class="toast" role="status"></div>
+</body></html>

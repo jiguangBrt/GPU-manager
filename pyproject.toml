@@ -1,0 +1,12 @@
+[project]
+name = "gpu-manager"
+version = "0.1.0"
+description = "A local, read-only GPU monitor over SSH"
+requires-python = ">=3.10"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.30,<1", "defusedxml>=0.7,<1"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "httpx>=0.27,<1"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
