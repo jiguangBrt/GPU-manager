@@ -21,21 +21,6 @@ async function api(path, options = {}) {
   }
   return response.json();
 }
-function chart(history, large = false) {
-  if (history.length < 2) return `<div class="trend-empty">${data.demo ? '静态快照 · 无历史' : '采样积累中'}</div>`;
-  const items = history.slice(large ? -720 : -60), width = 500, height = large ? 125 : 30;
-  const start = items[0].at, end = items.at(-1).at;
-  const points = items.map(p => p.utilization == null ? null : [(p.at - start) / Math.max(1, end - start) * width, height - p.utilization / 100 * (height - 4) - 2]);
-  let paths = [], current = [];
-  for (let i = 0; i < points.length; i++) {
-    if (!points[i] || (i && items[i].at - items[i-1].at > data.settings.interval_seconds * 2.5)) {
-      if (current.length) paths.push(current); current = [];
-    }
-    if (points[i]) current.push(points[i]);
-  }
-  if (current.length) paths.push(current);
-  return `<svg role="img" aria-label="GPU 利用率历史，纵轴 0 到 100 百分比" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${large ? [0,50,100].map(x=>`<line x1="0" x2="500" y1="${height-x/100*(height-4)-2}" y2="${height-x/100*(height-4)-2}" stroke="#e6ecdf" stroke-dasharray="4 5"/>`).join('') : ''}${paths.map(path=>`<polyline points="${path.map(p=>p.join(',')).join(' ')}" fill="none" stroke="#8ba877" stroke-width="${large?2:1.5}" vector-effect="non-scaling-stroke"/>`).join('')}</svg>`;
-}
 function visibleServers() {return data.servers.filter(s => !selectedServer || s.id === selectedServer);}
 function cards() {return visibleServers().flatMap(server => server.gpus.map(gpu => ({...gpu, server})));}
 function render() {
@@ -59,7 +44,7 @@ function render() {
   } else {
     const bad = visibleServers().filter(s=>s.stale), error = bad.find(s=>s.error);
     notice.className = `notice ${bad.length?'':'live'}`;
-    notice.innerHTML=`<span class="notice-icon">${bad.length?'!':'✓'}</span><div><strong>${bad.length?'等待连接或采集异常':'正在自动监控'}</strong><span>${bad.length?escapeHTML(error?.error||'正在通过 SSH 连接服务器，请稍候。'):`每 ${data.settings.interval_seconds} 秒读取一次显卡状态；历史仅在程序运行期间积累。`}</span></div>`;
+    notice.innerHTML=`<span class="notice-icon">${bad.length?'!':'✓'}</span><div><strong>${bad.length?'等待连接或采集异常':'正在自动监控'}</strong><span>${bad.length?escapeHTML(error?.error||'正在通过 SSH 连接服务器，请稍候。'):`每 ${data.settings.interval_seconds} 秒自动更新当前显卡状态。`}</span></div>`;
   }
   $('#gpu-count').textContent = `${gpus.length} 张`;
   $('#server-meta').textContent = visibleServers().map(s=>`${s.name}${s.driver?` · Driver ${s.driver}`:''}${s.cuda?` · CUDA ${s.cuda}`:''}`).join(' / ');
@@ -73,7 +58,7 @@ function render() {
       <div class="gpu-model" title="${escapeHTML(g.name)}">${escapeHTML(g.name)}</div>${data.servers.length>1?`<div class="gpu-server">${escapeHTML(g.server.name)}</div>`:''}
       <div class="metric-heading"><span>显存占用</span><b>${gib(g.memory_used_mib)} / ${gib(g.memory_total_mib)} GiB</b></div><div class="bar"><span style="width:${percent}%"></span></div>
       <div class="metric-heading"><span>GPU 利用率</span><b>${number(g.utilization)}${g.utilization==null?'':'%'}</b></div><div class="bar util ${g.utilization>=90?'high':''}"><span style="width:${Math.min(100,Math.max(0,g.utilization||0))}%"></span></div>
-      <div class="free-memory"><strong>${gib(g.memory_free_mib)}</strong><span>GiB</span><small>剩余显存</small></div><div class="micro-trend">${chart(g.history)}</div>
+      <div class="free-memory"><strong>${gib(g.memory_free_mib)}</strong><span>GiB</span><small>剩余显存</small></div>
       <div class="card-footer"><span class="${g.temperature>=75?'hot':''}">${number(g.temperature)} °C</span><span>${number(g.power_w)} / ${number(g.power_limit_w)} W</span><span>${g.processes.length} 进程 <span class="detail-arrow">↗</span></span></div></article>`;
   }).join('') : '<div class="empty"><strong>等待显卡数据</strong><br>连接成功后，这里会自动平铺所有显卡。<br>若长时间没有数据，请检查上方连接提示。</div>';
   $$('#gpu-grid [data-gpu]').forEach(el=>{
@@ -85,8 +70,6 @@ function render() {
 function renderDetail() {
   const server = data.servers.find(s=>s.id===selectedGPU?.sid), g = server?.gpus.find(g=>g.uuid===selectedGPU?.uuid);
   if (!g) {$('#detail-dialog').close();return;}
-  const history = g.history;
-  const range = history.length>1 ? `${new Date(history[0].at*1000).toLocaleTimeString('zh-CN',{hour12:false})} — ${new Date(history.at(-1).at*1000).toLocaleTimeString('zh-CN',{hour12:false})}` : '连接后自动积累真实历史';
   $('#detail-content').innerHTML=`<div class="dialog-header"><div class="eyebrow">GPU DETAILS ${data.demo?'· STATIC SNAPSHOT':''}</div><button class="close-button" id="close-detail" aria-label="关闭详情">×</button><h2>GPU ${g.index} <span>${labels[g.status]}</span></h2><p>${escapeHTML(g.name)} · ${escapeHTML(server.name)}</p></div>
     <div class="dialog-body">${server.error?`<div class="detail-error">${escapeHTML(server.error)}</div>`:''}
     <div class="detail-metrics"><div>剩余显存<strong>${gib(g.memory_free_mib)} <small>GiB</small></strong></div><div>GPU 利用率<strong>${number(g.utilization)} <small>%</small></strong></div><div>温度<strong>${number(g.temperature)} <small>°C</small></strong></div></div>
@@ -96,8 +79,6 @@ function renderDetail() {
     ${selectedGPU.processes?`<div class="owner-summary">${[...new Set(selectedGPU.processes.map(p=>p.user||'未知'))].map(user=>`<span>${escapeHTML(user)} <small>${selectedGPU.processes.filter(p=>(p.user||'未知')===user).length} 个进程</small></span>`).join('')}</div>`:''}
     <div class="process-scroll">${(selectedGPU.processes??g.processes).length?`<table class="process-table"><thead><tr><th>用户</th><th>PID / 类型</th><th>进程 / 启动命令</th><th>显存 MiB</th></tr></thead><tbody>${(selectedGPU.processes??g.processes).map(p=>`<tr><td class="process-user">${escapeHTML(p.user||'未知')}</td><td>${escapeHTML(p.pid)}<small>${escapeHTML(p.type)}</small></td><td><span class="process-name">${escapeHTML(p.name)}</span>${p.command?`<details class="process-command"><summary>完整启动命令</summary><code>${escapeHTML(p.command)}</code></details>`:''}</td><td>${number(p.memory_mib)}</td></tr>`).join('')}</tbody></table>`:'<p class="field-hint">当前未列出进程；部分权限或驱动模式可能无法返回完整信息。</p>'}</div>
     <p class="field-hint">用户名和命令由系统进程信息匹配 PID；权限不足或进程已退出时显示未知。C = 计算，G = 图形。</p>
-    <details class="history-details"><summary>查看 GPU 利用率趋势</summary>    <h3>GPU 利用率趋势 · 打开详情时的采样</h3><div class="detail-chart">${chart(history,true)}</div><div class="chart-caption">${range} · 纵轴 0–100%<br>${data.demo?'这是一份静态快照，没有生成或模拟历史数据。':'最多保留最近 720 次采样，程序退出后清空；断连处不连接曲线。'}</div>
-    </details>
     </div>`;
   $('#close-detail').addEventListener('click',()=>$('#detail-dialog').close());
   $('#refresh-processes')?.addEventListener('click',loadProcesses);

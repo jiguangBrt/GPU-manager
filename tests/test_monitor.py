@@ -97,7 +97,8 @@ def test_connection_failure_retains_but_marks_old_data(tmp_path, monkeypatch):
     monkeypatch.setattr(main, 'collect', lambda _: collector.parse_xml(XML))
     asyncio.run(monitor.poll())
     assert monitor.snapshot()['servers'][0]['gpus'][0]['status'] == 'zero'
-    assert monitor.histories
+    updated_at = monitor.snapshot()['servers'][0]['updated_at']
+    assert updated_at is not None
     def fail(_):
         raise RuntimeError('SSH unavailable')
     monkeypatch.setattr(main, 'collect', fail)
@@ -106,7 +107,8 @@ def test_connection_failure_retains_but_marks_old_data(tmp_path, monkeypatch):
     assert not result['demo']
     assert result['servers'][0]['error'] == 'SSH unavailable'
     assert result['servers'][0]['gpus'][0]['status'] == 'offline'
-    assert result['servers'][0]['gpus'][0]['history'] == []
+    assert result['servers'][0]['updated_at'] == updated_at
+    assert result['servers'][0]['gpus'][0]['memory_free_mib'] == 28540
     monitor.save(Settings(servers=[server.model_copy(update={'target': 'new-host'})]))
     assert not monitor.states  # never retain old host's readings after an edit
 

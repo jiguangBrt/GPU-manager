@@ -4,7 +4,6 @@ import json
 import os
 import re
 import time
-from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -53,7 +52,6 @@ class Monitor:
         self.path = path
         self.settings = Settings.model_validate_json(path.read_text('utf-8')) if path.exists() else Settings()
         self.states = {}
-        self.histories = {}
         self.lock = asyncio.Lock()
         self.wake = asyncio.Event()
         self.revision = 0
@@ -69,7 +67,6 @@ class Monitor:
         previous = {s.id: s for s in self.settings.servers}
         retained = {s.id for s in settings.servers if previous.get(s.id) == s}
         self.states = {k: v for k, v in self.states.items() if k in retained}
-        self.histories = {k: v for k, v in self.histories.items() if k[0] in retained}
         self.settings = settings
         self.revision += 1
         self.wake.set()
@@ -84,18 +81,11 @@ class Monitor:
                         return
                     now = time.time()
                     self.states[server.id] = {**data, 'updated_at': now, 'error': None}
-                    for gpu in data['gpus']:
-                        key = (server.id, gpu['uuid'])
-                        history = self.histories.setdefault(key, deque(maxlen=720))
-                        history.append({'at': now, 'utilization': gpu['utilization'], 'memory_free_mib': gpu['memory_free_mib']})
                 except Exception as exc:
                     if revision != self.revision:
                         return
                     previous = self.states.get(server.id, {'gpus': [], 'updated_at': None})
                     self.states[server.id] = {**previous, 'error': str(exc)}
-                    for key in list(self.histories):
-                        if key[0] == server.id:
-                            del self.histories[key]
             await asyncio.gather(*(one(server) for server in self.settings.servers))
 
     async def run(self):
@@ -118,9 +108,8 @@ class Monitor:
             stale = not demo and (updated is None or now - updated > max(20, self.settings.interval_seconds * 3) or bool(state.get('error')))
             gpus = []
             for gpu in state['gpus']:
-                history = list(self.histories.get((server.id, gpu['uuid']), []))
                 status = 'offline' if stale else ('unknown' if gpu['utilization'] is None else ('zero' if gpu['utilization'] == 0 else 'running'))
-                gpus.append({**gpu, 'status': status, 'history': history})
+                gpus.append({**gpu, 'status': status})
             result.append({'id': server.id, 'name': server.name, 'target': server.target,
                            'driver': state.get('driver'), 'cuda': state.get('cuda'),
                            'updated_at': updated, 'error': state.get('error'), 'stale': stale, 'gpus': gpus})
