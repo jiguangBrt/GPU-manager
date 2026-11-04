@@ -4,6 +4,7 @@ import json
 import os
 import re
 import time
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from uuid import uuid4
@@ -18,6 +19,7 @@ from gpu_monitor.collector import collect, parse_snapshot
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = Path(os.environ.get('GPU_MONITOR_CONFIG', ROOT / '.local' / 'config.json'))
+HISTORY_LIMIT = 720
 
 
 class Server(BaseModel):
@@ -52,6 +54,7 @@ class Monitor:
         self.path = path
         self.settings = Settings.model_validate_json(path.read_text('utf-8')) if path.exists() else Settings()
         self.states = {}
+        self.histories = {}
         self.lock = asyncio.Lock()
         self.wake = asyncio.Event()
         self.revision = 0
@@ -67,6 +70,7 @@ class Monitor:
         previous = {s.id: s for s in self.settings.servers}
         retained = {s.id for s in settings.servers if previous.get(s.id) == s}
         self.states = {k: v for k, v in self.states.items() if k in retained}
+        self.histories = {k: v for k, v in self.histories.items() if k[0] in retained}
         self.settings = settings
         self.revision += 1
         self.wake.set()
@@ -80,6 +84,21 @@ class Monitor:
                     if revision != self.revision:
                         return
                     now = time.time()
+                    previous = self.states.get(server.id, {})
+                    current_keys = set()
+                    for gpu in data['gpus']:
+                        key = (server.id, gpu['uuid'])
+                        current_keys.add(key)
+                        history = self.histories.setdefault(key, deque(maxlen=HISTORY_LIMIT))
+                        gap = bool(previous.get('error'))
+                        if history:
+                            max_interval = max(self.settings.interval_seconds, history[-1]['interval_seconds'])
+                            gap = gap or now - history[-1]['at'] > max_interval * 2.5
+                        history.append({'at': now, 'utilization': gpu['utilization'],
+                                        'interval_seconds': self.settings.interval_seconds, 'gap_before': gap})
+                    # Drop removed GPUs without affecting other servers' samples.
+                    self.histories = {k: v for k, v in self.histories.items()
+                                      if k[0] != server.id or k in current_keys}
                     self.states[server.id] = {**data, 'updated_at': now, 'error': None}
                 except Exception as exc:
                     if revision != self.revision:
@@ -109,12 +128,14 @@ class Monitor:
             gpus = []
             for gpu in state['gpus']:
                 status = 'offline' if stale else ('unknown' if gpu['utilization'] is None else ('zero' if gpu['utilization'] == 0 else 'running'))
-                gpus.append({**gpu, 'status': status})
+                gpus.append({**gpu, 'status': status,
+                             'history': list(self.histories.get((server.id, gpu['uuid']), []))})
             result.append({'id': server.id, 'name': server.name, 'target': server.target,
                            'driver': state.get('driver'), 'cuda': state.get('cuda'),
                            'updated_at': updated, 'error': state.get('error'), 'stale': stale, 'gpus': gpus})
         return {'demo': demo, 'snapshot_label': '虚构示例 · 静态快照' if demo else None,
-                'now': now, 'settings': self.settings.model_dump(), 'servers': result}
+                'now': now, 'history_limit': HISTORY_LIMIT,
+                'settings': self.settings.model_dump(), 'servers': result}
 
 
 @asynccontextmanager

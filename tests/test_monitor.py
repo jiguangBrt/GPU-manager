@@ -109,8 +109,56 @@ def test_connection_failure_retains_but_marks_old_data(tmp_path, monkeypatch):
     assert result['servers'][0]['gpus'][0]['status'] == 'offline'
     assert result['servers'][0]['updated_at'] == updated_at
     assert result['servers'][0]['gpus'][0]['memory_free_mib'] == 28540
+    assert len(result['servers'][0]['gpus'][0]['history']) == 1
+    monkeypatch.setattr(main, 'collect', lambda _: collector.parse_xml(XML))
+    asyncio.run(monitor.poll())
+    history = monitor.snapshot()['servers'][0]['gpus'][0]['history']
+    assert len(history) == 2
+    assert history[0]['gap_before'] is False
+    assert history[1]['gap_before'] is True
     monitor.save(Settings(servers=[server.model_copy(update={'target': 'new-host'})]))
     assert not monitor.states  # never retain old host's readings after an edit
+    assert not monitor.histories
+
+
+def test_history_is_bounded_and_preserves_missing_metrics(tmp_path, monkeypatch):
+    monitor = Monitor(tmp_path / 'config.json')
+    monitor.save(Settings(servers=[Server(name='Test', target='test-alias')]))
+    now = [1000.0]
+    monkeypatch.setattr(main.time, 'time', lambda: now[0])
+    def collect(_):
+        data = collector.parse_xml(XML)
+        data['gpus'][0]['utilization'] = None if now[0] == 1100 else 75
+        return data
+    monkeypatch.setattr(main, 'collect', collect)
+    async def sample():
+        for _ in range(main.HISTORY_LIMIT + 10):
+            await monitor.poll()
+            now[0] += 5
+    asyncio.run(sample())
+    state = monitor.snapshot()
+    history = state['servers'][0]['gpus'][0]['history']
+    assert len(history) == state['history_limit'] == 720
+    assert history[0]['at'] == 1050
+    assert next(point for point in history if point['at'] == 1100)['utilization'] is None
+    assert history[-1]['utilization'] == 75
+
+
+def test_history_marks_long_gaps_but_keeps_interval_changes_continuous(tmp_path, monkeypatch):
+    monitor = Monitor(tmp_path / 'config.json')
+    server = Server(name='Test', target='test-alias')
+    monitor.save(Settings(interval_seconds=60, servers=[server]))
+    now = [1000.0]
+    monkeypatch.setattr(main.time, 'time', lambda: now[0])
+    monkeypatch.setattr(main, 'collect', lambda _: collector.parse_xml(XML))
+    asyncio.run(monitor.poll())
+    monitor.save(Settings(interval_seconds=5, servers=[server]))
+    now[0] = 1062
+    asyncio.run(monitor.poll())
+    now[0] = 1200
+    asyncio.run(monitor.poll())
+    history = monitor.snapshot()['servers'][0]['gpus'][0]['history']
+    assert [point['gap_before'] for point in history] == [False, False, True]
 
 
 def test_api_settings_detail_and_cross_site_guard(tmp_path, monkeypatch):
