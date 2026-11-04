@@ -44,9 +44,9 @@ function historyChart(history = [], large = false) {
   }
   if (segment.length) segments.push(segment);
   if (!segments.length) return '<div class="trend-empty">当前采样缺少 GPU 利用率指标</div>';
-  const grid = large ? [3, height / 2, height - 3].map(y=>`<line x1="0" x2="600" y1="${y}" y2="${y}" stroke="#e1e8d9" stroke-dasharray="4 5"/>`).join('') : '';
+  const grid = [3, height / 2, height - 3].map(y=>`<line x1="0" x2="600" y1="${y}" y2="${y}" stroke="#e1e8d9" stroke-dasharray="4 5"/>`).join('');
   const lines = segments.map(points=>`<polyline points="${points.map(p=>`${p.x},${p.y}`).join(' ')}" fill="none" stroke="#789765" stroke-width="${large ? 2 : 1.5}" vector-effect="non-scaling-stroke"/>${points.map(p=>large||points.length===1?`<circle class="${large&&points.length>1?'chart-point':'chart-isolated-point'}" cx="${p.x}" cy="${p.y}" r="${large?4:2}" fill="#789765"><title>${escapeHTML(timeLabel(p.at))} · GPU 利用率 ${p.value}%</title></circle>`:'').join('')}`).join('');
-  return `<div class="history-graph ${large?'large':''}">${large?'<div class="chart-y-axis"><span>100%</span><span>50%</span><span>0%</span></div>':''}<div class="chart-plot"><svg role="img" aria-label="GPU 利用率趋势，0 到 100 百分比，共 ${items.length} 次采样" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${grid}${lines}</svg><div class="chart-x-axis"><span>${escapeHTML(timeLabel(start))}</span><span>${escapeHTML(timeLabel(end))}</span></div></div></div>`;
+  return `<div class="history-graph ${large?'large':''}"><div class="chart-y-axis"><span>100%</span><span>50%</span><span>0%</span></div><div class="chart-plot"><svg role="img" aria-label="GPU 利用率趋势，0 到 100 百分比，共 ${items.length} 次采样" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${grid}${lines}</svg><div class="chart-x-axis"><span>${escapeHTML(timeLabel(start))}</span><span>${escapeHTML(timeLabel(end))}</span></div></div></div>`;
 }
 function updateDetailLive() {
   if (!$('#detail-dialog').open) return;
@@ -103,7 +103,7 @@ function render() {
       <div class="metric-heading"><span>显存占用</span><b>${gib(g.memory_used_mib)} / ${gib(g.memory_total_mib)} GiB</b></div><div class="bar"><span style="width:${percent}%"></span></div>
       <div class="metric-heading"><span>GPU 利用率</span><b>${number(g.utilization)}${g.utilization==null?'':'%'}</b></div><div class="bar util ${g.utilization>=90?'high':''}"><span style="width:${Math.min(100,Math.max(0,g.utilization||0))}%"></span></div>
       <div class="free-memory"><strong>${gib(g.memory_free_mib)}</strong><span>GiB</span><small>剩余显存</small></div>
-      <div class="micro-trend"><div class="micro-trend-heading"><span>近期 GPU 利用率</span><span>最近 ${Math.min(60,(g.history||[]).length)} 次</span></div>${historyChart(g.history||[])}</div>
+      <div class="micro-trend"><div class="micro-trend-heading"><span>最近 ${Math.min(60,(g.history||[]).length)} 次</span></div>${historyChart(g.history||[])}</div>
       <div class="card-footer"><span class="${g.temperature>=75?'hot':''}">${number(g.temperature)} °C</span><span>${number(g.power_w)} / ${number(g.power_limit_w)} W</span><span>${g.processes.length} 进程 <span class="detail-arrow">↗</span></span></div></article>`;
   }).join('') : '<div class="empty"><strong>等待显卡数据</strong><br>连接成功后，这里会自动平铺所有显卡。<br>若长时间没有数据，请检查上方连接提示。</div>';
   $$('#gpu-grid [data-gpu]').forEach(el=>{
