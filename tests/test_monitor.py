@@ -1,5 +1,6 @@
 import asyncio
 import subprocess
+from collections import deque
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,7 +122,7 @@ def test_connection_failure_retains_but_marks_old_data(tmp_path, monkeypatch):
     assert not monitor.histories
 
 
-def test_history_is_bounded_and_preserves_missing_metrics(tmp_path, monkeypatch):
+def test_history_keeps_raw_samples_and_compresses_display(tmp_path, monkeypatch):
     monitor = Monitor(tmp_path / 'config.json')
     monitor.save(Settings(servers=[Server(name='Test', target='test-alias')]))
     now = [1000.0]
@@ -132,16 +133,86 @@ def test_history_is_bounded_and_preserves_missing_metrics(tmp_path, monkeypatch)
         return data
     monkeypatch.setattr(main, 'collect', collect)
     async def sample():
-        for _ in range(main.HISTORY_LIMIT + 10):
+        for _ in range(720):
             await monitor.poll()
             now[0] += 5
     asyncio.run(sample())
     state = monitor.snapshot()
     history = state['servers'][0]['gpus'][0]['history']
-    assert len(history) == state['history_limit'] == 720
-    assert history[0]['at'] == 1050
-    assert next(point for point in history if point['at'] == 1100)['utilization'] is None
+    gpu = state['servers'][0]['gpus'][0]
+    assert len(history) == state['history_limit'] == 120
+    assert state['history_window_seconds'] == 12 * 60 * 60
+    assert gpu['history_count'] == 720
+    assert gpu['history_group_size'] == 6
+    assert gpu['history_start'] == 1000
+    raw = monitor.histories[(monitor.settings.servers[0].id, 'GPU-test')]
+    assert len(raw) == 720
+    assert next(point for point in raw if point['at'] == 1100)['utilization'] is None
+    assert any(point['gap_before'] for point in history)
     assert history[-1]['utilization'] == 75
+    assert len(gpu['recent_history']) == 60
+    assert gpu['recent_history'] == list(raw)[-60:]
+
+
+def history_samples(values, start=1000, interval=5):
+    return [{'at': start + i * interval, 'utilization': value,
+             'interval_seconds': interval, 'gap_before': False}
+            for i, value in enumerate(values)]
+
+
+@pytest.mark.parametrize('interval', [5, 60])
+def test_history_rolls_over_twelve_hours_even_without_new_samples(tmp_path, monkeypatch, interval):
+    monitor = Monitor(tmp_path / 'config.json')
+    server = Server(name='Test', target='test-alias')
+    monitor.save(Settings(interval_seconds=interval, servers=[server]))
+    now = [1000 + 13 * 60 * 60]
+    monkeypatch.setattr(main.time, 'time', lambda: now[0])
+    monkeypatch.setattr(main, 'collect', lambda _: collector.parse_xml(XML))
+    key = (server.id, 'GPU-test')
+    monitor.histories[key] = deque(history_samples([75] * (13 * 60 * 60 // interval), interval=interval))
+    asyncio.run(monitor.poll())
+    gpu = monitor.snapshot()['servers'][0]['gpus'][0]
+    assert gpu['history_start'] == now[0] - main.HISTORY_WINDOW_SECONDS
+    assert gpu['history_count'] == main.HISTORY_WINDOW_SECONDS // interval + 1
+    assert len(gpu['history']) <= 120
+    assert all(point['at'] >= now[0] - main.HISTORY_WINDOW_SECONDS for point in gpu['history'])
+    # Prune on reads too: a disconnected server must not keep showing old data.
+    now[0] += main.HISTORY_WINDOW_SECONDS + 1
+    gpu = monitor.snapshot()['servers'][0]['gpus'][0]
+    assert gpu['history_count'] == 0
+    assert gpu['history'] == gpu['recent_history'] == []
+    assert not monitor.histories[key]
+
+
+@pytest.mark.parametrize('count', [0, 1, 119, 120, 121, 719, 720, 721, 8641])
+def test_compression_is_bounded_and_preserves_each_group_peak(count):
+    samples = history_samples([(i * 17) % 101 for i in range(count)])
+    original = [dict(point) for point in samples]
+    compressed, group_size = main.compress_history(samples)
+    assert len(compressed) <= 120
+    assert group_size == max(1, (count + 119) // 120)
+    for i, point in enumerate(compressed):
+        group = samples[i * group_size:(i + 1) * group_size]
+        peak = max(group, key=lambda p: (p['utilization'], p['at']))
+        assert point == peak
+    assert samples == original  # repeated compression always uses raw data
+
+
+def test_compression_preserves_gaps_hidden_inside_groups():
+    samples = history_samples([10] * 720)
+    samples[0]['utilization'] = 99
+    samples[3]['gap_before'] = True  # after the first group's peak
+    samples[6]['utilization'] = 90
+    samples[8]['utilization'] = None  # after the second group's peak
+    samples[12]['utilization'] = 80
+    samples[18]['gap_before'] = True  # before the fourth group's peak
+    for point in samples[24:30]:
+        point['utilization'] = None
+    compressed, group_size = main.compress_history(samples)
+    assert group_size == 6
+    assert [p['gap_before'] for p in compressed[:4]] == [False, True, True, True]
+    assert compressed[4]['utilization'] is None
+    assert compressed[5]['gap_before'] is True
 
 
 def test_history_marks_long_gaps_but_keeps_interval_changes_continuous(tmp_path, monkeypatch):

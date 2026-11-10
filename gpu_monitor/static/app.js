@@ -22,14 +22,17 @@ async function api(path, options = {}) {
   return response.json();
 }
 const timeLabel = at => new Date(at * 1000).toLocaleTimeString('zh-CN', {hour12:false});
-function historyChart(history = [], large = false) {
-  const items = history.slice(large ? -(data.history_limit || 720) : -60);
+function historyChart(history = [], large = false, startAt = null) {
+  const cutoff = data.now - (data.history_window_seconds || 12 * 60 * 60);
+  const recent = history.filter(sample => sample.at >= cutoff && sample.at <= data.now);
+  const items = recent.slice(large ? -(data.history_limit || 120) : -60);
   if (items.length < 2) {
     const message = data.demo ? '静态示例 · 无历史采样' : `等待连续采样 · 已有 ${items.length} 次（间隔 ${data.settings.interval_seconds} 秒）`;
     return `<div class="trend-empty">${message}</div>`;
   }
   const width = 600, height = large ? 128 : 38;
-  const start = items[0].at, end = items.at(-1).at;
+  const start = large ? Math.max(cutoff, startAt ?? items[0].at) : items[0].at;
+  const end = large ? data.now : items.at(-1).at;
   const segments = []; let segment = [];
   for (const sample of items) {
     if (sample.gap_before || sample.utilization == null) {
@@ -46,7 +49,12 @@ function historyChart(history = [], large = false) {
   if (!segments.length) return '<div class="trend-empty">当前采样缺少 GPU 利用率指标</div>';
   const grid = [3, height / 2, height - 3].map(y=>`<line x1="0" x2="600" y1="${y}" y2="${y}" stroke="#e1e8d9" stroke-dasharray="4 5"/>`).join('');
   const lines = segments.map(points=>`<polyline points="${points.map(p=>`${p.x},${p.y}`).join(' ')}" fill="none" stroke="#789765" stroke-width="${large ? 2 : 1.5}" vector-effect="non-scaling-stroke"/>${points.map(p=>large||points.length===1?`<circle class="${large&&points.length>1?'chart-point':'chart-isolated-point'}" cx="${p.x}" cy="${p.y}" r="${large?4:2}" fill="#789765"><title>${escapeHTML(timeLabel(p.at))} · GPU 利用率 ${p.value}%</title></circle>`:'').join('')}`).join('');
-  return `<div class="history-graph ${large?'large':''}"><div class="chart-y-axis"><span>100%</span><span>50%</span><span>0%</span></div><div class="chart-plot"><svg role="img" aria-label="GPU 利用率趋势，0 到 100 百分比，共 ${items.length} 次采样" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${grid}${lines}</svg><div class="chart-x-axis"><span>${escapeHTML(timeLabel(start))}</span><span>${escapeHTML(timeLabel(end))}</span></div></div></div>`;
+  return `<div class="history-graph ${large?'large':''}"><div class="chart-y-axis"><span>100%</span><span>50%</span><span>0%</span></div><div class="chart-plot"><svg role="img" aria-label="GPU 利用率趋势，0 到 100 百分比，共 ${items.length} 个显示点" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none">${grid}${lines}</svg><div class="chart-x-axis"><span>${escapeHTML(timeLabel(start))}</span><span>${escapeHTML(timeLabel(end))}</span></div></div></div>`;
+}
+function historyCaption(g) {
+  if (data.demo) return '示例快照没有历史数据。';
+  const groupSize = g.history_group_size || 1;
+  return `最近 12 小时内 ${g.history_count || 0} 次采样 · 显示 ${(g.history || []).length} / ${data.history_limit || 120} 个点 · ${groupSize > 1 ? `每 ${groupSize} 次采样取最大值（末组不足时按实际数量）` : '逐点显示，超过上限自动分组取最大值'} · 断连或指标缺失处留空 · 悬停查看峰值的实际采样时间与利用率。关闭网页仍继续采集，重启服务清空。`;
 }
 function updateDetailLive() {
   if (!$('#detail-dialog').open) return;
@@ -61,9 +69,9 @@ function updateDetailLive() {
   const error = server.error || (server.stale ? '当前数据已过期，等待服务器采样恢复。' : '');
   $('#detail-error').textContent = error; $('#detail-error').hidden = !error;
   const history = g.history || [], plot = $('#detail-history');
-  const key = `${data.demo}:${history.length}:${history.at(-1)?.at}`;
-  if (plot.dataset.sampleKey !== key) {plot.innerHTML=historyChart(history,true);plot.dataset.sampleKey=key;}
-  $('#detail-history-caption').textContent = data.demo ? '示例快照没有历史数据。' : `已记录 ${history.length} / ${data.history_limit||720} 次采样 · 断连或指标缺失处留空 · 悬停采样点查看时间与利用率。历史从本次服务启动起记录，关闭网页仍继续采集，重启服务清空。`;
+  const key = `${data.demo}:${data.now}:${g.history_count}:${g.history_start}`;
+  if (plot.dataset.sampleKey !== key) {plot.innerHTML=historyChart(history,true,g.history_start);plot.dataset.sampleKey=key;}
+  $('#detail-history-caption').textContent = historyCaption(g);
 }
 function visibleServers() {return data.servers.filter(s => !selectedServer || s.id === selectedServer);}
 function cards() {return visibleServers().flatMap(server => server.gpus.map(gpu => ({...gpu, server})));}
@@ -103,7 +111,7 @@ function render() {
       <div class="metric-heading"><span>显存占用</span><b>${gib(g.memory_used_mib)} / ${gib(g.memory_total_mib)} GiB</b></div><div class="bar"><span style="width:${percent}%"></span></div>
       <div class="metric-heading"><span>GPU 利用率</span><b>${number(g.utilization)}${g.utilization==null?'':'%'}</b></div><div class="bar util ${g.utilization>=90?'high':''}"><span style="width:${Math.min(100,Math.max(0,g.utilization||0))}%"></span></div>
       <div class="free-memory"><strong>${gib(g.memory_free_mib)}</strong><span>GiB</span><small>剩余显存</small></div>
-      <div class="micro-trend"><div class="micro-trend-heading"><span>最近 ${Math.min(60,(g.history||[]).length)} 次</span></div>${historyChart(g.history||[])}</div>
+      <div class="micro-trend"><div class="micro-trend-heading"><span>最近 ${(g.recent_history||[]).length} 次</span></div>${historyChart(g.recent_history||[])}</div>
       <div class="card-footer"><span class="${g.temperature>=75?'hot':''}">${number(g.temperature)} °C</span><span>${number(g.power_w)} / ${number(g.power_limit_w)} W</span><span>${g.processes.length} 进程 <span class="detail-arrow">↗</span></span></div></article>`;
   }).join('') : '<div class="empty"><strong>等待显卡数据</strong><br>连接成功后，这里会自动平铺所有显卡。<br>若长时间没有数据，请检查上方连接提示。</div>';
   $$('#gpu-grid [data-gpu]').forEach(el=>{
@@ -119,7 +127,7 @@ function renderDetail() {
   $('#detail-content').innerHTML=`<div class="dialog-header"><div class="eyebrow">GPU DETAILS ${data.demo?'· STATIC SNAPSHOT':''}</div><button class="close-button" id="close-detail" aria-label="关闭详情">×</button><h2>GPU ${g.index} <span id="detail-status" class="badge ${g.status}">${labels[g.status]}</span></h2><p>${escapeHTML(g.name)} · ${escapeHTML(server.name)}</p></div>
     <div class="dialog-body"><div class="detail-error" id="detail-error" ${server.error?'':'hidden'}>${escapeHTML(server.error||'')}</div>
     <div class="detail-metrics"><div>剩余显存<strong><span id="detail-free">${gib(g.memory_free_mib)}</span> <small>GiB</small></strong></div><div>GPU 利用率<strong><span id="detail-util">${number(g.utilization)}</span> <small>%</small></strong></div><div>温度<strong><span id="detail-temp">${number(g.temperature)}</span> <small>°C</small></strong></div></div>
-    <section class="history-section"><div class="history-heading"><h3>GPU 利用率趋势</h3><span>最近 ${data.history_limit||720} 次采样</span></div><div id="detail-history">${historyChart(g.history||[],true)}</div><p id="detail-history-caption" class="chart-caption">${data.demo?'示例快照没有历史数据。':'自动更新 · 历史保存在本次服务运行期间，重启服务清空。'}</p></section>
+    <section class="history-section"><div class="history-heading"><h3>GPU 利用率趋势</h3><span>最近 12 小时 · 最多 ${data.history_limit||120} 点</span></div><div id="detail-history">${historyChart(g.history||[],true,g.history_start)}</div><p id="detail-history-caption" class="chart-caption">${historyCaption(g)}</p></section>
     <div class="form-section-heading"><h3>谁在使用 · ${selectedGPU.processes?.length ?? g.processes.length} 个进程</h3>${data.demo?'':`<button class="quiet-link" id="refresh-processes" ${selectedGPU.fetching?'disabled':''}>${selectedGPU.fetching?'正在查询…':'↻ 刷新进程'}</button>`}</div>
     <p class="field-hint">${data.demo?'静态快照没有用户名；连接服务器后可实时查询。':selectedGPU.fetching?'正在向服务器查询这张卡的当前进程和所属用户…':selectedGPU.updatedAt?`进程采集时间 ${new Date(selectedGPU.updatedAt*1000).toLocaleTimeString('zh-CN',{hour12:false})} · 点击刷新获取最新进程。`:'尚未取得实时进程信息。'}</p>
     ${selectedGPU.error?`<div class="detail-error">${escapeHTML(selectedGPU.error)}</div>`:''}

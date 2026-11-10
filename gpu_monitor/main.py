@@ -19,7 +19,25 @@ from gpu_monitor.collector import collect, parse_snapshot
 
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = Path(os.environ.get('GPU_MONITOR_CONFIG', ROOT / '.local' / 'config.json'))
-HISTORY_LIMIT = 720
+HISTORY_WINDOW_SECONDS = 12 * 60 * 60
+HISTORY_LIMIT = 120
+
+
+def compress_history(samples):
+    """Keep each group's peak, without drawing across skipped gaps."""
+    group_size = max(1, (len(samples) + HISTORY_LIMIT - 1) // HISTORY_LIMIT)
+    result = []
+    previous_index = -1
+    for start in range(0, len(samples), group_size):
+        end = min(start + group_size, len(samples))
+        valid = [i for i in range(start, end) if samples[i]['utilization'] is not None]
+        index = max(valid, key=lambda i: (samples[i]['utilization'], samples[i]['at'])) if valid else end - 1
+        gap = (previous_index >= 0 and samples[previous_index]['utilization'] is None) or any(
+            p['gap_before'] or p['utilization'] is None
+            for p in samples[previous_index + 1:index + 1])
+        result.append({**samples[index], 'gap_before': gap})
+        previous_index = index
+    return result, group_size
 
 
 class Server(BaseModel):
@@ -77,6 +95,7 @@ class Monitor:
 
     async def poll(self):
         async with self.lock:
+            self.prune_histories(time.time())
             revision = self.revision
             async def one(server):
                 try:
@@ -89,7 +108,7 @@ class Monitor:
                     for gpu in data['gpus']:
                         key = (server.id, gpu['uuid'])
                         current_keys.add(key)
-                        history = self.histories.setdefault(key, deque(maxlen=HISTORY_LIMIT))
+                        history = self.histories.setdefault(key, deque())
                         gap = bool(previous.get('error'))
                         if history:
                             max_interval = max(self.settings.interval_seconds, history[-1]['interval_seconds'])
@@ -116,8 +135,15 @@ class Monitor:
             except asyncio.TimeoutError:
                 pass
 
+    def prune_histories(self, now):
+        cutoff = now - HISTORY_WINDOW_SECONDS
+        for history in self.histories.values():
+            while history and history[0]['at'] < cutoff:
+                history.popleft()
+
     def snapshot(self):
         now = time.time()
+        self.prune_histories(now)
         demo = not self.settings.servers
         servers = self.settings.servers if not demo else [Server(id='demo', name='示例 GPU 服务器', target='example-gpu-server')]
         result = []
@@ -128,13 +154,19 @@ class Monitor:
             gpus = []
             for gpu in state['gpus']:
                 status = 'offline' if stale else ('unknown' if gpu['utilization'] is None else ('zero' if gpu['utilization'] == 0 else 'running'))
+                samples = list(self.histories.get((server.id, gpu['uuid']), []))
+                history, group_size = compress_history(samples)
                 gpus.append({**gpu, 'status': status,
-                             'history': list(self.histories.get((server.id, gpu['uuid']), []))})
+                             'history': history, 'history_count': len(samples),
+                             'history_group_size': group_size,
+                             'history_start': samples[0]['at'] if samples else None,
+                             'recent_history': samples[-60:]})
             result.append({'id': server.id, 'name': server.name, 'target': server.target,
                            'driver': state.get('driver'), 'cuda': state.get('cuda'),
                            'updated_at': updated, 'error': state.get('error'), 'stale': stale, 'gpus': gpus})
         return {'demo': demo, 'snapshot_label': '虚构示例 · 静态快照' if demo else None,
                 'now': now, 'history_limit': HISTORY_LIMIT,
+                'history_window_seconds': HISTORY_WINDOW_SECONDS,
                 'settings': self.settings.model_dump(), 'servers': result}
 
 
